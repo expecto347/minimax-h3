@@ -37,16 +37,12 @@ def run(prompt, preset, seconds, aspect, mp, steps, lora_strength, seed, ref_ima
     if ref_images and first_frame:
         raise gr.Error("参考图和首帧图只能二选一")
     lines = []
-
-    def log(msg):
-        lines.append(msg)
-        progress(0.5, desc=msg)
-
-    progress(0.05, desc="排队中…")
+    progress(0.0, desc="提交任务…")
     try:
         paths = h3.generate(prompt, preset=preset, seconds=seconds, aspect=aspect, mp=mp or None, steps=int(steps) or None,
                             lora_strength=lora_strength, seed=int(seed), ref_image=ref_images or [],
-                            first_frame=first_frame, log=log)
+                            first_frame=first_frame, log=lines.append,
+                            on_progress=lambda frac, text: progress(frac, desc=text))
     except RuntimeError as e:
         raise gr.Error(str(e)[:500])
     video = next((p for p in paths if p.endswith(".mp4")), paths[0])
@@ -80,7 +76,7 @@ def main():
                 info = gr.Textbox(label="信息", lines=2)
                 gallery = gr.Files(value=history(), label="历史视频（点击下载）")
         go.click(run, [prompt, preset, seconds, aspect, mp, steps, lora_strength, seed, ref_images, first_frame],
-                 [video, info, gallery])
+                 [video, info, gallery], show_progress_on=[video])
 
     auth = tuple(os.environ["H3_AUTH"].split(":", 1)) if os.environ.get("H3_AUTH") else None
     share = os.environ.get("H3_SHARE") == "1"

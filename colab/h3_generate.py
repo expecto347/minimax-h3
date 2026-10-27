@@ -20,6 +20,8 @@ import time
 import urllib.request
 import uuid
 
+import websocket  # websocket-client
+
 COMFY = os.environ.get("COMFY_DIR", "/content/ComfyUI")
 SERVER = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
 
@@ -137,10 +139,80 @@ def call(path, payload=None):
         return json.load(r)
 
 
+def queue_position(pid):
+    """Number of jobs ahead of pid (0 once it is running or finished)."""
+    q = call("/queue")
+    if any(item[1] == pid for item in q["queue_running"]):
+        return 0
+    pending = sorted(q["queue_pending"], key=lambda item: item[0])
+    ids = [item[1] for item in pending]
+    return len(q["queue_running"]) + ids.index(pid) if pid in ids else 0
+
+
+STAGES = {"cond": (0.08, "编码提示词…"), "sample": (0.10, "采样准备中…"), "decode": (0.92, "解码视频…"),
+          "adecode": (0.95, "解码音频…"), "video": (0.97, "合成视频…"), "save": (0.98, "保存视频…")}
+
+
+def watch(ws, pid, on_progress):
+    """Follow ComfyUI websocket events for pid, reporting (fraction, text) until it finishes."""
+    t0 = time.time()
+    started = False
+    step_times = []
+    last_queue_check = 0
+    shown = 0.0
+
+    def report(frac, text):
+        nonlocal shown
+        shown = max(shown, frac)  # stages can arrive out of order; never move the bar backwards
+        on_progress(shown, text)
+    while True:
+        try:
+            raw = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            raw = None
+        if not started and time.time() - last_queue_check > 3:
+            last_queue_check = time.time()
+            ahead = queue_position(pid)
+            if ahead:
+                report(0.0, f"排队中：前面还有 {ahead} 个任务")
+        if not isinstance(raw, str):
+            continue
+        msg = json.loads(raw)
+        data = msg.get("data", {})
+        if data.get("prompt_id") not in (None, pid):
+            continue
+        kind = msg.get("type")
+        elapsed = f"已用 {time.time() - t0:.0f} 秒"
+        if kind == "execution_start":
+            started = True
+            t0 = time.time()
+            report(0.02, "加载模型…")
+        elif kind == "executing":
+            node = data.get("node")
+            if node is None:
+                return
+            if node in STAGES:
+                frac, text = STAGES[node]
+                report(frac, f"{text}（{elapsed}）")
+        elif kind == "progress" and data.get("node") == "sample":
+            value, total = data["value"], data["max"]
+            step_times.append(time.time())
+            text = f"采样 {value}/{total} 步（{elapsed}）"
+            if len(step_times) >= 2:
+                per_step = (step_times[-1] - step_times[0]) / (len(step_times) - 1)
+                text += f" · 每步约 {per_step:.0f} 秒 · 采样还需约 {per_step * (total - value):.0f} 秒"
+            report(0.10 + 0.80 * value / total, text)
+        elif kind in ("execution_success", "execution_error", "execution_interrupted"):
+            return
+
+
 def generate(prompt, preset="mystic", seconds=5, aspect="9:16", mp=None, steps=None, sampler=None,
              scheduler=None, lora_strength=None, seed=None, ref_image=(), first_frame=None, prefix=None,
-             log=lambda msg: print(msg, file=sys.stderr)):
-    """Queue one generation on ComfyUI, wait for it, and return the output file paths."""
+             log=lambda msg: print(msg, file=sys.stderr), on_progress=None):
+    """Queue one generation on ComfyUI, wait for it, and return the output file paths.
+
+    on_progress(fraction, text) is called as the job moves through queue, sampling and decoding.
+    """
     args = argparse.Namespace(prompt=prompt, preset=preset, steps=steps, sampler=sampler, scheduler=scheduler,
                               lora_strength=lora_strength, ref_image=list(ref_image), first_frame=first_frame,
                               prefix=prefix, seed=random.randrange(2**48) if seed is None or seed < 0 else seed)
@@ -150,8 +222,19 @@ def generate(prompt, preset="mystic", seconds=5, aspect="9:16", mp=None, steps=N
     graph, variant = build(args, cfg, width, height, length)
     log(f"{preset}/{variant}: {width}x{height}, {length} frames, seed {args.seed}")
 
-    pid = call("/prompt", {"prompt": graph, "client_id": uuid.uuid4().hex})["prompt_id"]
+    client_id = uuid.uuid4().hex
     t0 = time.time()
+    ws = None
+    if on_progress:
+        # Connect before queueing so no progress event is missed.
+        ws = websocket.create_connection(SERVER.replace("http", "ws", 1) + f"/ws?clientId={client_id}", timeout=2)
+    try:
+        pid = call("/prompt", {"prompt": graph, "client_id": client_id})["prompt_id"]
+        if ws:
+            watch(ws, pid, on_progress)
+    finally:
+        if ws:
+            ws.close()
     while True:
         hist = call(f"/history/{pid}").get(pid)
         if hist and hist.get("status", {}).get("completed") is not None:
@@ -182,7 +265,13 @@ def main():
     p.add_argument("--first-frame", help="first frame image (image-to-video)")
     p.add_argument("--prefix")
     try:
-        paths = generate(**vars(p.parse_args()))
+        last = [None]
+
+        def show(frac, text):
+            if text.split("（")[0] != last[0]:
+                last[0] = text.split("（")[0]
+                print(f"[{frac:4.0%}] {text}", file=sys.stderr)
+        paths = generate(**vars(p.parse_args()), on_progress=show)
     except RuntimeError as e:
         sys.exit(str(e))
     print("\n".join(paths))
