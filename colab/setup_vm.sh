@@ -40,7 +40,7 @@ if [ ! -d "$COMFY" ]; then
 fi
 # Keep Colab's preinstalled CUDA torch; install everything else.
 grep -viE '^(torch|torchvision|torchaudio)([<>=~ ]|$)' "$COMFY/requirements.txt" > /tmp/comfy-reqs.txt
-pip install -q -r /tmp/comfy-reqs.txt "huggingface_hub[hf_xet]>=0.34"
+pip install -q -r /tmp/comfy-reqs.txt "huggingface_hub[hf_xet]>=0.34" gradio
 
 for entry in "${FILES[@]}"; do
   IFS='|' read -r src a b sub sha <<< "$entry"

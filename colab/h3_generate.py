@@ -137,6 +137,35 @@ def call(path, payload=None):
         return json.load(r)
 
 
+def generate(prompt, preset="mystic", seconds=5, aspect="9:16", mp=None, steps=None, sampler=None,
+             scheduler=None, lora_strength=None, seed=None, ref_image=(), first_frame=None, prefix=None,
+             log=lambda msg: print(msg, file=sys.stderr)):
+    """Queue one generation on ComfyUI, wait for it, and return the output file paths."""
+    args = argparse.Namespace(prompt=prompt, preset=preset, steps=steps, sampler=sampler, scheduler=scheduler,
+                              lora_strength=lora_strength, ref_image=list(ref_image), first_frame=first_frame,
+                              prefix=prefix, seed=random.randrange(2**48) if seed is None or seed < 0 else seed)
+    cfg = PRESETS[preset]
+    width, height = size_for(aspect, mp or cfg["mp"])
+    length = frames_for(seconds)
+    graph, variant = build(args, cfg, width, height, length)
+    log(f"{preset}/{variant}: {width}x{height}, {length} frames, seed {args.seed}")
+
+    pid = call("/prompt", {"prompt": graph, "client_id": uuid.uuid4().hex})["prompt_id"]
+    t0 = time.time()
+    while True:
+        hist = call(f"/history/{pid}").get(pid)
+        if hist and hist.get("status", {}).get("completed") is not None:
+            break
+        time.sleep(2)
+    status = hist["status"]
+    if status.get("status_str") != "success":
+        raise RuntimeError(f"generation failed: {json.dumps(status.get('messages'))[:2000]}")
+    log(f"done in {time.time() - t0:.0f}s")
+    return [os.path.join(COMFY, "output", item.get("subfolder", ""), item["filename"])
+            for out in hist["outputs"].values()
+            for item in out.get("images", []) + out.get("videos", [])]
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("prompt")
@@ -152,31 +181,11 @@ def main():
     p.add_argument("--ref-image", action="append", default=[], help="reference image (repeatable, max 9)")
     p.add_argument("--first-frame", help="first frame image (image-to-video)")
     p.add_argument("--prefix")
-    args = p.parse_args()
-    if args.seed is None:
-        args.seed = random.randrange(2**48)
-    preset = PRESETS[args.preset]
-
-    width, height = size_for(args.aspect, args.mp or preset["mp"])
-    length = frames_for(args.seconds)
-    graph, variant = build(args, preset, width, height, length)
-    print(f"{args.preset}/{variant}: {width}x{height}, {length} frames, seed {args.seed}", file=sys.stderr)
-
-    pid = call("/prompt", {"prompt": graph, "client_id": uuid.uuid4().hex})["prompt_id"]
-    t0 = time.time()
-    while True:
-        hist = call(f"/history/{pid}").get(pid)
-        if hist and hist.get("status", {}).get("completed") is not None:
-            break
-        time.sleep(2)
-    status = hist["status"]
-    if status.get("status_str") != "success":
-        sys.exit(f"generation failed: {json.dumps(status.get('messages'))[:2000]}")
-    for out in hist["outputs"].values():
-        for item in out.get("images", []) + out.get("videos", []):
-            path = os.path.join(COMFY, "output", item.get("subfolder", ""), item["filename"])
-            print(f"done in {time.time() - t0:.0f}s", file=sys.stderr)
-            print(path)
+    try:
+        paths = generate(**vars(p.parse_args()))
+    except RuntimeError as e:
+        sys.exit(str(e))
+    print("\n".join(paths))
 
 
 if __name__ == "__main__":

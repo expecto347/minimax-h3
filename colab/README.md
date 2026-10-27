@@ -28,7 +28,20 @@
 - 文本编码器（去审查）：[ethanfel/Qwen3-VL-32B-Ultra-Heretic](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot)，24.6 GB
 - VAE：Comfy-Org 官方视频 / 音频 VAE
 
-## 用法
+## 网页界面（最简单）
+
+`colab/h3.sh up` 部署完会自动启动网页，也可以单独运行 `colab/h3.sh web`。然后打开 http://localhost:7860：
+
+- 输入提示词，选模型和画幅，点「生成」，视频直接显示在页面上
+- 「参考图 / 首帧图」：上传参考图会自动切到 Ref2VA，提示词里用 `<Picture 1>` 指代
+- 「高级参数」：分辨率、步数、LoRA 强度、种子
+- 「历史视频」：以前生成的视频，点击即可下载
+
+没有电脑、只用手机的话，可以开带密码的公网链接（Gradio share）：
+`H3_SHARE=1 H3_AUTH=用户名:密码 colab/h3.sh web`，会打印一个 `https://xxx.gradio.live` 地址，72 小时有效。
+注意：这个链接任何人拿到都能访问（有密码保护），Colab 条款对隧道类连接也有限制，请自行权衡。
+
+## 命令行用法
 
 前提：本机已安装并登录 `colab`（`uv tool install google-colab-cli`），有 `ssh`。
 
