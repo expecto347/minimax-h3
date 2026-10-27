@@ -2,6 +2,7 @@
 # Local driver for the Colab MiniMax-H3 deployment. Needs colab-cli logged in and ssh.
 #
 #   colab/h3.sh up                      # create GPU session, install ComfyUI + models, start server
+#                                       #   H3_PRESET=mystic (default) | pinkcherry | all
 #   colab/h3.sh gen "prompt" [opts...]  # generate; opts go to h3_generate.py; mp4 lands in ./outputs
 #   colab/h3.sh ui                      # forward ComfyUI to http://localhost:8188
 #   colab/h3.sh down                    # stop the session (stops compute-unit billing)
@@ -39,7 +40,7 @@ case "${1:-}" in
     ssh_config
     colab sessions 2>/dev/null | grep -qw "$SESSION" || colab new -s "$SESSION" --gpu "$GPU"
     scp -q "$HERE"/setup_vm.sh "$HERE"/start_comfy.sh "$HERE"/h3_generate.py "$HOST":/content/
-    ssh "$HOST" 'bash /content/setup_vm.sh && bash /content/start_comfy.sh'
+    ssh "$HOST" "bash /content/setup_vm.sh ${H3_PRESET:-mystic} && bash /content/start_comfy.sh"
     ;;
   gen)
     shift

@@ -1,11 +1,13 @@
 """Generate a MiniMax-H3 video through a running ComfyUI server (run on the Colab VM).
 
-Follows the PinkCherry v1.8 recommended recipe: 8-step turbo LoRA, euler/simple,
-12 steps, reference-to-video conditioning.
+Presets follow each community model author's published workflow:
+  mystic      Mystic XXX v5.0 LoRA on the official pruned INT8 bases (default)
+  pinkcherry  PinkCherry v1.8-hybrid NSFW fine-tune
 
-  python3 h3_generate.py "prompt text" --seconds 5 --aspect 9:16 --mp 0.8
+  python3 h3_generate.py "prompt text" --seconds 5 --aspect 9:16
   python3 h3_generate.py "..." --ref-image a.png --ref-image b.png   # <Picture 1>, <Picture 2>
   python3 h3_generate.py "..." --first-frame start.png               # image-to-video
+  python3 h3_generate.py "..." --preset pinkcherry
 """
 import argparse
 import json
@@ -21,11 +23,29 @@ import uuid
 COMFY = os.environ.get("COMFY_DIR", "/content/ComfyUI")
 SERVER = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
 
-UNET = "PinkCherry_hybrid_v1.8_int8_minimax_h3_pruned.safetensors"
 CLIP = "qwen3vl_32b_h3_ultra_uncensored_heretic_int8_convrot.safetensors"
 VIDEO_VAE = "minimax_h3_video_vae_fp16.safetensors"
 AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
-TURBO_LORA = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+MYSTIC_TURBO = "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors"
+PINKCHERRY = "PinkCherry_hybrid_v1.8_int8_minimax_h3_pruned.safetensors"
+
+# unet/loras are keyed by variant: "fl2va" (text / first-frame) or "ref2va" (reference images).
+PRESETS = {
+    "mystic": {
+        "unet": {"fl2va": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                 "ref2va": "minimax_h3_ref2va_pruned_int8_convrot.safetensors"},
+        "loras": {"fl2va": [("MysticXXX_MMH3-V5.safetensors", 1.0), (MYSTIC_TURBO, 0.75)],
+                  "ref2va": [("MysticXXX_MMH3-V5-ref2va.safetensors", 1.0), (MYSTIC_TURBO, 0.75)]},
+        "text_variant": "fl2va",
+        "sampler": "res_multistep", "scheduler": "simple", "steps": 8, "mp": 1.0, "ref_max": 512,
+    },
+    "pinkcherry": {
+        "unet": {"fl2va": PINKCHERRY, "ref2va": PINKCHERRY},
+        "loras": {v: [("minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", 1.0)] for v in ("fl2va", "ref2va")},
+        "text_variant": "ref2va",
+        "sampler": "euler", "scheduler": "simple", "steps": 12, "mp": 0.8, "ref_max": None,
+    },
+}
 
 
 def frames_for(seconds):
@@ -48,32 +68,55 @@ def stage_input(path):
     return name
 
 
-def build(args, width, height, length):
+def build(args, preset, width, height, length):
+    if args.ref_image:
+        variant = "ref2va"
+    elif args.first_frame:
+        variant = "fl2va"
+    else:
+        variant = preset["text_variant"]
+
     g = {
-        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
-        "model": {"class_type": "LoraLoaderModelOnly",
-                  "inputs": {"model": ["unet", 0], "lora_name": TURBO_LORA, "strength_model": args.lora_strength}},
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": preset["unet"][variant], "weight_dtype": "default"}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP, "type": "minimax", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": VIDEO_VAE}},
         "avae": {"class_type": "VAELoader", "inputs": {"vae_name": AUDIO_VAE}},
     }
+    model = ["unet", 0]
+    for i, (lora, strength) in enumerate(preset["loras"][variant]):
+        if i == 0 and args.lora_strength is not None:
+            strength = args.lora_strength
+        g[f"lora{i}"] = {"class_type": "LoraLoaderModelOnly",
+                         "inputs": {"model": model, "lora_name": lora, "strength_model": strength}}
+        model = [f"lora{i}", 0]
+
     common = {"clip": ["clip", 0], "vae": ["vae", 0], "prompt": args.prompt,
               "width": width, "height": height, "length": length}
-    if args.first_frame:
-        g["ff"] = {"class_type": "LoadImage", "inputs": {"image": stage_input(args.first_frame)}}
-        g["cond"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": {**common, "first_frame": ["ff", 0]}}
-    else:
+    if variant == "ref2va":
         inputs = {**common, "audio_vae": ["avae", 0], "ref_image_size": "match"}
         for i, path in enumerate(args.ref_image):
             g[f"ref{i}"] = {"class_type": "LoadImage", "inputs": {"image": stage_input(path)}}
-            inputs[f"ref_images.ref_image_{i}"] = [f"ref{i}", 0]
+            image = [f"ref{i}", 0]
+            if preset["ref_max"]:
+                g[f"refscale{i}"] = {"class_type": "ImageScaleToMaxDimension",
+                                     "inputs": {"image": image, "upscale_method": "area", "largest_size": preset["ref_max"]}}
+                image = [f"refscale{i}", 0]
+            inputs[f"ref_images.ref_image_{i}"] = image
         g["cond"] = {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": inputs}
+    else:
+        inputs = dict(common)
+        if args.first_frame:
+            g["ff"] = {"class_type": "LoadImage", "inputs": {"image": stage_input(args.first_frame)}}
+            inputs["first_frame"] = ["ff", 0]
+        g["cond"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": inputs}
+
     g.update({
         "noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": args.seed}},
-        "sampler": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": args.sampler}},
+        "sampler": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": args.sampler or preset["sampler"]}},
         "sigmas": {"class_type": "BasicScheduler",
-                   "inputs": {"model": ["model", 0], "scheduler": args.scheduler, "steps": args.steps, "denoise": 1.0}},
-        "guider": {"class_type": "BasicGuider", "inputs": {"model": ["model", 0], "conditioning": ["cond", 0]}},
+                   "inputs": {"model": model, "scheduler": args.scheduler or preset["scheduler"],
+                              "steps": args.steps or preset["steps"], "denoise": 1.0}},
+        "guider": {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": ["cond", 0]}},
         "sample": {"class_type": "SamplerCustomAdvanced",
                    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
                               "sigmas": ["sigmas", 0], "latent_image": ["cond", 1]}},
@@ -81,9 +124,10 @@ def build(args, width, height, length):
         "adecode": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["sample", 0], "vae": ["avae", 0]}},
         "video": {"class_type": "CreateVideo", "inputs": {"images": ["decode", 0], "audio": ["adecode", 0], "fps": 24}},
         "save": {"class_type": "SaveVideo",
-                 "inputs": {"video": ["video", 0], "filename_prefix": args.prefix, "format": "auto", "codec": "auto"}},
+                 "inputs": {"video": ["video", 0], "filename_prefix": args.prefix or f"h3/{args.preset}",
+                            "format": "auto", "codec": "auto"}},
     })
-    return g
+    return g, variant
 
 
 def call(path, payload=None):
@@ -96,25 +140,27 @@ def call(path, payload=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("prompt")
+    p.add_argument("--preset", choices=sorted(PRESETS), default="mystic")
     p.add_argument("--seconds", type=float, default=5)
     p.add_argument("--aspect", default="9:16")
-    p.add_argument("--mp", type=float, default=0.8, help="output megapixels")
-    p.add_argument("--steps", type=int, default=12)
-    p.add_argument("--sampler", default="euler")
-    p.add_argument("--scheduler", default="simple")
-    p.add_argument("--lora-strength", type=float, default=1.0)
+    p.add_argument("--mp", type=float, help="output megapixels (preset default)")
+    p.add_argument("--steps", type=int)
+    p.add_argument("--sampler")
+    p.add_argument("--scheduler")
+    p.add_argument("--lora-strength", type=float, help="strength of the preset's main LoRA")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--ref-image", action="append", default=[], help="reference image (repeatable, max 9)")
     p.add_argument("--first-frame", help="first frame image (image-to-video)")
-    p.add_argument("--prefix", default="h3/H3")
+    p.add_argument("--prefix")
     args = p.parse_args()
     if args.seed is None:
         args.seed = random.randrange(2**48)
+    preset = PRESETS[args.preset]
 
-    width, height = size_for(args.aspect, args.mp)
+    width, height = size_for(args.aspect, args.mp or preset["mp"])
     length = frames_for(args.seconds)
-    graph = build(args, width, height, length)
-    print(f"{width}x{height}, {length} frames, {args.steps} steps, seed {args.seed}", file=sys.stderr)
+    graph, variant = build(args, preset, width, height, length)
+    print(f"{args.preset}/{variant}: {width}x{height}, {length} frames, seed {args.seed}", file=sys.stderr)
 
     pid = call("/prompt", {"prompt": graph, "client_id": uuid.uuid4().hex})["prompt_id"]
     t0 = time.time()
