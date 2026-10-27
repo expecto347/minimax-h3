@@ -64,7 +64,8 @@ case "${1:-}" in
     ;;
   web)
     # Optional public link: H3_SHARE=1 H3_AUTH=user:password colab/h3.sh web
-    ssh "$HOST" "cd /content && { pgrep -f web_app.py >/dev/null || H3_SHARE=${H3_SHARE:-} H3_AUTH=${H3_AUTH:-} setsid nohup python3 web_app.py > web.log 2>&1 < /dev/null & }
+    # Anchored pattern so pgrep doesn't match this ssh command line itself.
+    ssh "$HOST" "cd /content && { pgrep -f '^python3 web_app' >/dev/null || (PYTHONUNBUFFERED=1 H3_SHARE=${H3_SHARE:-} H3_AUTH=${H3_AUTH:-} setsid nohup python3 web_app.py > web.log 2>&1 < /dev/null &); }
       for i in \$(seq 60); do curl -sf -o /dev/null http://127.0.0.1:7860/ && break; sleep 2; done; grep -o 'https://[a-z0-9.-]*gradio.live' web.log | tail -1"
     ssh -O forward -L 7860:127.0.0.1:7860 "$HOST" 2>/dev/null || true
     echo "Web UI: http://localhost:7860"
