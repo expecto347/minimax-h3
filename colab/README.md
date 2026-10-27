@@ -41,6 +41,13 @@
 `H3_SHARE=1 H3_AUTH=用户名:密码 colab/h3.sh web`，会打印一个 `https://xxx.gradio.live` 地址，72 小时有效。
 注意：这个链接任何人拿到都能访问（有密码保护），Colab 条款对隧道类连接也有限制，请自行权衡。
 
+## 视频保存位置
+
+视频生成在 Colab 机器的 `/content/ComfyUI/output/h3/` 下，**停机后会被删除**。
+
+运行 `colab/h3.sh drive` 可以挂载 Google Drive：先打开它打印的授权链接，授权后按回车。之后每条新视频 20 秒内会自动复制到 Drive 的 `MiniMax-H3` 文件夹。
+Drive 要在每次新开机器后重新挂载。
+
 ## 命令行用法
 
 前提：本机已安装并登录 `colab`（`uv tool install google-colab-cli`），有 `ssh`。

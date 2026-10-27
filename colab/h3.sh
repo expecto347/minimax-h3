@@ -5,6 +5,7 @@
 #                                       #   H3_PRESET=mystic (default) | pinkcherry | all
 #   colab/h3.sh gen "prompt" [opts...]  # generate; opts go to h3_generate.py; mp4 lands in ./outputs
 #   colab/h3.sh web                     # prompt-to-video page at http://localhost:7860
+#   colab/h3.sh drive                   # mount Google Drive and back up videos to MyDrive/MiniMax-H3
 #   colab/h3.sh ui                      # forward ComfyUI to http://localhost:8188
 #   colab/h3.sh down                    # stop the session (stops compute-unit billing)
 set -euo pipefail
@@ -69,6 +70,13 @@ case "${1:-}" in
       for i in \$(seq 60); do curl -sf -o /dev/null http://127.0.0.1:7860/ && break; sleep 2; done; grep -o 'https://[a-z0-9.-]*gradio.live' web.log | tail -1"
     ssh -O forward -L 7860:127.0.0.1:7860 "$HOST" 2>/dev/null || true
     echo "Web UI: http://localhost:7860"
+    ;;
+  drive)
+    # Mount Google Drive (prints an auth link, then waits for Enter) and back up every video to it.
+    colab drivemount -s "$SESSION"
+    scp -q "$HERE"/drive_sync.sh "$HOST":/content/
+    ssh "$HOST" "pgrep -f '^bash drive_sync' >/dev/null || (cd /content && setsid nohup bash drive_sync.sh > drive_sync.log 2>&1 < /dev/null &)"
+    echo "Videos are copied to MyDrive/MiniMax-H3"
     ;;
   ui)
     # Ride the existing multiplexed connection; a second colab ssh would be refused.
