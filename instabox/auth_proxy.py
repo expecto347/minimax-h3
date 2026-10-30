@@ -7,10 +7,12 @@ import hashlib
 import hmac
 import html
 import os
+import re
 import secrets
 
 import aiohttp
 from aiohttp import web
+from yarl import URL
 
 UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8188")
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
@@ -31,6 +33,23 @@ border-radius:6px;background:#e8590c;color:#fff;font-size:15px}}.err{{color:#ff8
 <input name="user" placeholder="用户名" autocomplete="username" required>
 <input name="password" type="password" placeholder="密码" autocomplete="current-password" required>
 <button>登录</button></form></body></html>"""
+
+
+USERDATA = re.compile(r"^(/api)?/userdata/([^?]+)(\?.*)?$")
+
+
+def upstream_url(request):
+    # ComfyUI's /userdata/{file} and /userdata/{file}/move/{dest} take a whole file path as one
+    # %2F-encoded segment. The instabox edge decodes %2F before we see it, so re-encode the
+    # slashes there; everything else is forwarded as the raw request target.
+    target = request.raw_path
+    m = USERDATA.match(target)
+    if m:
+        prefix, rest, query = m.group(1) or "", m.group(2), m.group(3) or ""
+        parts = rest.split("/move/", 1)
+        rest = "/move/".join(p.replace("/", "%2F") for p in parts)
+        target = f"{prefix}/userdata/{rest}{query}"
+    return URL(UPSTREAM + target, encoded=True)
 
 
 def token():
@@ -59,7 +78,7 @@ async def proxy_ws(request):
     client = web.WebSocketResponse(max_msg_size=0)
     await client.prepare(request)
     session = request.app["session"]
-    async with session.ws_connect(UPSTREAM + request.path_qs, max_msg_size=0) as upstream:
+    async with session.ws_connect(upstream_url(request), max_msg_size=0) as upstream:
         async def pump(src, dst):
             async for msg in src:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -89,7 +108,7 @@ async def handler(request):
     # ComfyUI 403s when Origin and Host differ, and the instabox edge rewrites Host. Logins are
     # already enforced here with a SameSite cookie, so Origin is not forwarded.
     headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS | {"origin"}}
-    async with request.app["session"].request(request.method, UPSTREAM + request.path_qs, headers=headers,
+    async with request.app["session"].request(request.method, upstream_url(request), headers=headers,
                                               data=request.content, allow_redirects=False) as up:
         resp = web.StreamResponse(status=up.status, headers={
             k: v for k, v in up.headers.items() if k.lower() not in HOP_HEADERS})
