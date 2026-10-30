@@ -14,10 +14,14 @@ keep working through ComfyUI's own machinery while the work happens remotely:
 Configuration (environment):
   COLAB_SESSION (h3)  COLAB_GPU (G4)  COLAB_REMOTE_PORT (9188)
   COLAB_IDLE_STOP_SECONDS (300)  H3_COLAB_DIR (dir with setup_vm.sh, start_comfy.sh)
+  H3_PUBLIC_URL: this host's published URL; while Colab may be up a websocket is held open
+    through it so instabox's 30-minute idle pause cannot freeze this plugin mid-job
   HF_TOKEN: Hugging Face read token, written to the VM's token file (avoids 429s)
   H3_DRIVE_REMOTE (e.g. gdrive:MiniMax-H3-models): rclone model cache; this host's
     ~/.config/rclone/rclone.conf is copied to the Colab VM to reach it
 """
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -45,6 +49,7 @@ IDLE_STOP = int(os.environ.get("COLAB_IDLE_STOP_SECONDS", "300"))
 COLAB_DIR = os.environ.get("H3_COLAB_DIR", os.path.expanduser("~/minimax-h3/colab"))
 DRIVE_REMOTE = os.environ.get("H3_DRIVE_REMOTE", "")
 RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
+PUBLIC_URL = os.environ.get("H3_PUBLIC_URL", "").rstrip("/")
 COLAB = os.environ.get("COLAB_BIN", os.path.expanduser("~/.local/bin/colab"))
 HOST = f"colab-{SESSION}"
 REMOTE_COMFY = "/content/ComfyUI"
@@ -283,7 +288,46 @@ def idle_stopper():
 
 
 execution.PromptExecutor.execute_async = remote_execute_async
+def keep_awake():
+    """Hold a request open on the public URL while Colab may be running.
+
+    instabox pauses an idle machine after 30 minutes, which would freeze this plugin with the
+    Colab GPU still billing. An in-progress public-port request counts as activity, so keep a
+    websocket through auth_proxy.py (logged in with the same cookie it issues) and ping it.
+    """
+    user, _ = os.environ.get("H3_AUTH", ":").split(":", 1)
+    secret = os.environ.get("H3_COOKIE_SECRET", "")
+    if not (PUBLIC_URL and user and secret):
+        log.warning("keep_awake disabled: H3_PUBLIC_URL, H3_AUTH or H3_COOKIE_SECRET missing")
+        return
+    cookie = "h3_session=" + hmac.new(secret.encode(), user.encode(), hashlib.sha256).hexdigest()
+    url = PUBLIC_URL.replace("https://", "wss://", 1) + f"/ws?clientId=keepawake-{uuid.uuid4().hex[:8]}"
+    while True:
+        if not _maybe_running:
+            time.sleep(15)
+            continue
+        try:
+            ws = websocket.create_connection(url, cookie=cookie, timeout=30)
+            ws.settimeout(5)
+            last_ping = 0.0
+            try:
+                while _maybe_running:
+                    if time.time() - last_ping > 30:
+                        ws.ping()
+                        last_ping = time.time()
+                    try:
+                        ws.recv()  # drain ComfyUI's broadcasts so this socket never backs up
+                    except websocket.WebSocketTimeoutException:
+                        pass
+            finally:
+                ws.close()
+        except Exception as e:
+            log.warning("keep_awake connection dropped: %s", e)
+            time.sleep(30)
+
+
 threading.Thread(target=idle_stopper, name="colab-idle-stopper", daemon=True).start()
+threading.Thread(target=keep_awake, name="colab-keep-awake", daemon=True).start()
 log.info("colab_remote: prompts run on Colab session %s (%s); idle stop after %ss", SESSION, GPU, IDLE_STOP)
 
 NODE_CLASS_MAPPINGS = {}
