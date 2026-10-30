@@ -35,6 +35,6 @@ ssh "$HOST" 'df -h /content | tail -1; mkdir -p ~/.config/rclone && chmod 700 ~/
 scp -q "$REPO/colab/setup_vm.sh" "$HOST":/content/
 scp -q ~/.config/rclone/rclone.conf "$HOST":.config/rclone/rclone.conf
 ssh "$HOST" "cd /content && H3_FILES='$files' H3_DRIVE_REMOTE='$DRIVE' bash setup_vm.sh all > setup.log 2>&1; grep -E 'drive|have|SETUP_DONE|rror' setup.log"
-# Read one file back to measure Drive -> Colab speed.
-ssh "$HOST" "f=\$(ls -S /content/ComfyUI/models/*/*.safetensors | head -1); rel=\${f#/content/ComfyUI/models/}; rm -f \"\$f\"; t0=\$SECONDS; rclone copyto '$DRIVE'/\"\$rel\" \"\$f\" --multi-thread-streams 8 && echo \"read back \$rel (\$(du -h \"\$f\" | cut -f1)) in \$((SECONDS - t0))s\""
+# Measure a real cold start: drop every local model and fetch them back from Drive.
+ssh "$HOST" "rm -f /content/ComfyUI/models/*/*.safetensors && cd /content && H3_FILES='$files' H3_DRIVE_REMOTE='$DRIVE' bash setup_vm.sh all > restore.log 2>&1; grep -E 'from drive|failed' restore.log; du -sh /content/ComfyUI/models"
 rclone lsl "$DRIVE"

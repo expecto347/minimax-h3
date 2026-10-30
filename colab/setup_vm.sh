@@ -83,18 +83,28 @@ cached=""
 [ -n "$DRIVE" ] && cached=$(rclone lsf -R --files-only "$DRIVE" 2>/dev/null || true)
 uploads=()
 
+# Pull everything the cache has in one parallel copy.
+if [ -n "$cached" ]; then
+  : > /tmp/h3-from-drive
+  for entry in ${FILES[@]+"${FILES[@]}"}; do
+    IFS='|' read -r _ _ b sub _ <<< "$entry"
+    rel=$sub/$(basename "$b")
+    [ -s "$M/$rel" ] || ! grep -qxF "$rel" <<< "$cached" || echo "$rel" >> /tmp/h3-from-drive
+  done
+  if [ -s /tmp/h3-from-drive ]; then
+    t0=$SECONDS
+    rclone copy "$DRIVE" "$M" --files-from /tmp/h3-from-drive --transfers 4 --multi-thread-streams 8 \
+      && echo "from drive $(wc -l < /tmp/h3-from-drive) files in $((SECONDS - t0))s" \
+      || echo "drive copy failed; falling back to the original sources" >&2
+  fi
+fi
+
 for entry in ${FILES[@]+"${FILES[@]}"}; do
   IFS='|' read -r src a b sub sha <<< "$entry"
   name=$(basename "$b")
   dest=$M/$sub/$name
   [ -s "$dest" ] && { echo "have $name"; continue; }
   mkdir -p "$M/$sub"
-  if grep -qxF "$sub/$name" <<< "$cached"; then
-    t0=$SECONDS
-    rclone copyto "$DRIVE/$sub/$name" "$dest" --multi-thread-streams 8 && {
-      echo "from drive $name in $((SECONDS - t0))s"; continue; }
-    rm -f "$dest"
-  fi
   [ -n "$DRIVE" ] && uploads+=("$sub/$name")
   if [ "$src" = hf ]; then
     mkdir -p "$ROOT/hf-dl"
@@ -114,9 +124,11 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
   fi
 done
 rm -rf "$ROOT/hf-dl"
-for rel in ${uploads[@]+"${uploads[@]}"}; do
+if [ ${#uploads[@]} -gt 0 ]; then
+  printf '%s\n' "${uploads[@]}" > /tmp/h3-to-drive
   t0=$SECONDS
-  rclone copyto "$M/$rel" "$DRIVE/$rel" --drive-chunk-size 256M && echo "to drive $rel in $((SECONDS - t0))s"
-done
+  rclone copy "$M" "$DRIVE" --files-from /tmp/h3-to-drive --transfers 4 --drive-chunk-size 256M \
+    && echo "to drive ${#uploads[@]} files in $((SECONDS - t0))s" || echo "drive upload failed" >&2
+fi
 ls -la "$M"/{diffusion_models,text_encoders,vae,loras}
 echo SETUP_DONE
