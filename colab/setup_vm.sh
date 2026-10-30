@@ -68,6 +68,28 @@ if [ -n "${H3_FILES:-}" ]; then
   FILES=("${wanted[@]}")
 fi
 
+# Progress for whoever drives this script (the instabox plugin polls it):
+# {"stage", "index", "count", "file", "total" bytes, "watch" paths whose size is the bytes so far}
+STATUS=$ROOT/h3-status.json
+status() {
+  printf '{"stage":"%s","index":%s,"count":%s,"file":"%s","total":%s,"watch":"%s"}\n' \
+    "$1" "${2:-0}" "${3:-0}" "${4:-}" "${5:-0}" "${6:-}" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+}
+hf_size() {
+  python3 - "$1" "$2" 2>/dev/null <<'PY' || echo 0
+import sys
+from huggingface_hub import HfApi
+info = HfApi().get_paths_info(sys.argv[1], [sys.argv[2]])
+print(info[0].size if info else 0)
+PY
+}
+url_size() {
+  # Civitai's CDN refuses HEAD; a one-byte range request reports the size in Content-Range.
+  curl -fsSL -r 0-0 -D - -o /dev/null ${CIVITAI_TOKEN:+-H "Authorization: Bearer $CIVITAI_TOKEN"} "$1" 2>/dev/null \
+    | tr -d '\r' | awk -F/ 'tolower($0) ~ /^content-range:/ {n = $NF} END {print n + 0}'
+}
+
+status comfy
 if [ ! -d "$COMFY" ]; then
   git clone --depth 1 https://github.com/comfyanonymous/ComfyUI "$COMFY"
 fi
@@ -104,6 +126,7 @@ if [ -n "$cached" ] && [ "${H3_DRIVE_MODE:-fallback}" = first ]; then
     [ -s "$M/$rel" ] || ! grep -qxF "$rel" <<< "$cached" || echo "$rel" >> /tmp/h3-from-drive
   done
   if [ -s /tmp/h3-from-drive ]; then
+    status drive 0 "$(wc -l < /tmp/h3-from-drive)"
     t0=$SECONDS
     rclone copy "$DRIVE" "$M" --files-from /tmp/h3-from-drive --transfers 4 --multi-thread-streams 8 \
       && echo "from drive $(wc -l < /tmp/h3-from-drive) files in $((SECONDS - t0))s" \
@@ -111,17 +134,25 @@ if [ -n "$cached" ] && [ "${H3_DRIVE_MODE:-fallback}" = first ]; then
   fi
 fi
 
+todo=0
+for entry in ${FILES[@]+"${FILES[@]}"}; do
+  IFS='|' read -r _ _ b sub _ <<< "$entry"
+  [ -s "$M/$sub/$(basename "$b")" ] || todo=$((todo + 1))
+done
+done_n=0
 for entry in ${FILES[@]+"${FILES[@]}"}; do
   IFS='|' read -r src a b sub sha <<< "$entry"
   name=$(basename "$b")
   dest=$M/$sub/$name
   [ -s "$dest" ] && { echo "have $name"; continue; }
+  done_n=$((done_n + 1))
   mkdir -p "$M/$sub"
   in_cache=false
   grep -qxF "$sub/$name" <<< "$cached" && in_cache=true
   [ -n "$DRIVE" ] && ! $in_cache && uploads+=("$sub/$name")
   if [ "$src" = hf ]; then
     mkdir -p "$ROOT/hf-dl"
+    status download "$done_n" "$todo" "$name" "$(hf_size "$a" "$b")" "$ROOT/hf-dl $HOME/.cache/huggingface/xet"
     # Unauthenticated Hub downloads get rate limited (429); back off, then skip the xet CDN.
     for try in 1 2 3 4 5; do
       if [ "$try" -eq 1 ]; then hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break
@@ -137,6 +168,7 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
     done
     mv "$ROOT/hf-dl/$b" "$dest"
   else
+    status download "$done_n" "$todo" "$name" "$(url_size "$a")" "$dest.part"
     if curl -fsSL ${CIVITAI_TOKEN:+-H "Authorization: Bearer $CIVITAI_TOKEN"} -o "$dest.part" "$a" \
         && echo "$sha  $dest.part" | sha256sum -c --quiet; then
       mv "$dest.part" "$dest"
@@ -150,10 +182,12 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
 done
 rm -rf "$ROOT/hf-dl"
 if [ ${#uploads[@]} -gt 0 ]; then
+  status upload 0 "${#uploads[@]}"
   printf '%s\n' "${uploads[@]}" > /tmp/h3-to-drive
   t0=$SECONDS
   rclone copy "$M" "$DRIVE" --files-from /tmp/h3-to-drive --transfers 4 --drive-chunk-size 256M \
     && echo "to drive ${#uploads[@]} files in $((SECONDS - t0))s" || echo "drive upload failed" >&2
 fi
 ls -la "$M"/{diffusion_models,text_encoders,vae,loras}
+status done
 echo SETUP_DONE
