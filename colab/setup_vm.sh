@@ -89,6 +89,24 @@ url_size() {
     | tr -d '\r' | awk -F/ 'tolower($0) ~ /^content-range:/ {n = $NF} END {print n + 0}'
 }
 
+# Run a download, killing it when $ROOT/hf-dl and the xet cache stop growing for 2 minutes
+# (the xet downloader occasionally hangs mid-file); the caller's retry loop takes it from there.
+stall_guard() {
+  "$@" &
+  local pid=$! last=-1 still=0 now
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 10
+    now=$(du -sbc "$ROOT/hf-dl" "$HOME/.cache/huggingface/xet" 2>/dev/null | tail -1 | cut -f1)
+    if [ "$now" = "$last" ]; then still=$((still + 10)); else still=0; last=$now; fi
+    if [ "$still" -ge 120 ]; then
+      echo "download stalled for 2 minutes, restarting it" >&2
+      kill "$pid" 2>/dev/null
+      break
+    fi
+  done
+  wait "$pid"
+}
+
 status comfy
 if [ ! -d "$COMFY" ]; then
   git clone --depth 1 https://github.com/comfyanonymous/ComfyUI "$COMFY"
@@ -155,8 +173,8 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
     status download "$done_n" "$todo" "$name" "$(hf_size "$a" "$b")" "$ROOT/hf-dl $HOME/.cache/huggingface/xet"
     # Unauthenticated Hub downloads get rate limited (429); back off, then skip the xet CDN.
     for try in 1 2 3 4 5; do
-      if [ "$try" -eq 1 ]; then hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break
-      else HF_HUB_DISABLE_XET=1 hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break; fi
+      if [ "$try" -eq 1 ]; then stall_guard hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break
+      else HF_HUB_DISABLE_XET=1 stall_guard hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break; fi
       if [ "$try" -eq 5 ]; then
         $in_cache || exit 1
         echo "hub failed for $name, copying it from drive" >&2
