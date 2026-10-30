@@ -78,7 +78,14 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
   mkdir -p "$M/$sub"
   if [ "$src" = hf ]; then
     mkdir -p "$ROOT/hf-dl"
-    hf download "$a" "$b" --local-dir "$ROOT/hf-dl"
+    # Unauthenticated Hub downloads get rate limited (429); back off, then skip the xet CDN.
+    for try in 1 2 3 4 5; do
+      if [ "$try" -eq 1 ]; then hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break
+      else HF_HUB_DISABLE_XET=1 hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break; fi
+      [ "$try" -eq 5 ] && exit 1
+      echo "download failed (try $try), retrying in $((try * 20))s" >&2
+      sleep $((try * 20))
+    done
     mv "$ROOT/hf-dl/$b" "$dest"
   else
     curl -fsSL ${CIVITAI_TOKEN:+-H "Authorization: Bearer $CIVITAI_TOKEN"} -o "$dest.part" "$a"
