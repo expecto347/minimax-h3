@@ -31,6 +31,13 @@ instabox port publish agent 8080                        # 得到 https://8080-<i
 配置在 `~/.config/h3.env`（`COLAB_GPU`、`COLAB_IDLE_STOP_SECONDS` 等），改完
 `sudo systemctl restart h3-comfyui`。日志：`sudo journalctl -u h3-comfyui -f`。
 
+## Google Drive 模型缓存
+
+`~/.config/rclone/rclone.conf` 里的 `gdrive` 远端（`drive.file` 权限，只能看到 rclone 自己上传的文件）
+加上 `H3_DRIVE_REMOTE=gdrive:MiniMax-H3-models`：Colab 开机时模型优先从 Drive 拷贝，Drive 没有的才从
+Hugging Face / Civitai 下载，下载后自动传进 Drive。`seed_drive.sh` 用便宜的 CPU Colab（约 0.08 units/小时）
+预先把 Mystic 全套传进 Drive。
+
 ## 注意
 
 - 首次运行（或 Colab 关机后再运行）要先开机并下载模型，约 5–10 分钟；界面上会显示进度文字。

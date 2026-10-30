@@ -14,6 +14,8 @@ keep working through ComfyUI's own machinery while the work happens remotely:
 Configuration (environment):
   COLAB_SESSION (h3)  COLAB_GPU (G4)  COLAB_REMOTE_PORT (9188)
   COLAB_IDLE_STOP_SECONDS (300)  H3_COLAB_DIR (dir with setup_vm.sh, start_comfy.sh)
+  H3_DRIVE_REMOTE (e.g. gdrive:MiniMax-H3-models): rclone model cache; this host's
+    ~/.config/rclone/rclone.conf is copied to the Colab VM to reach it
 """
 import json
 import logging
@@ -40,6 +42,8 @@ GPU = os.environ.get("COLAB_GPU", "G4")
 PORT = int(os.environ.get("COLAB_REMOTE_PORT", "9188"))
 IDLE_STOP = int(os.environ.get("COLAB_IDLE_STOP_SECONDS", "300"))
 COLAB_DIR = os.environ.get("H3_COLAB_DIR", os.path.expanduser("~/minimax-h3/colab"))
+DRIVE_REMOTE = os.environ.get("H3_DRIVE_REMOTE", "")
+RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 COLAB = os.environ.get("COLAB_BIN", os.path.expanduser("~/.local/bin/colab"))
 HOST = f"colab-{SESSION}"
 REMOTE_COMFY = "/content/ComfyUI"
@@ -123,6 +127,10 @@ def ensure_remote(prompt, say):
     files = model_files(prompt)
     say(f"正在准备 ComfyUI 和模型（{len(files)} 个文件，首次约 5–10 分钟）…")
     env = f"COMFY_REF={comfy_ref()} H3_FILES={shlex.quote(' '.join(files))}"
+    if DRIVE_REMOTE and os.path.isfile(RCLONE_CONF):
+        ssh("mkdir -p ~/.config/rclone && chmod 700 ~/.config/rclone", timeout=60)
+        sh(f"scp -q {RCLONE_CONF} {HOST}:.config/rclone/rclone.conf", timeout=60)
+        env += f" H3_DRIVE_REMOTE={shlex.quote(DRIVE_REMOTE)}"
     ssh(f"cd /content && {env} bash setup_vm.sh all > setup.log 2>&1 || (tail -20 setup.log; exit 1)", timeout=3600)
     if not remote_up():
         say("正在启动远程 ComfyUI…")

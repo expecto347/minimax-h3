@@ -4,6 +4,8 @@
 # Idempotent; re-running skips finished steps.
 #   COMFY_REF=<commit>   check out this ComfyUI commit (to match another install)
 #   H3_FILES="a b ..."   only fetch these model file names (from any preset)
+#   H3_DRIVE_REMOTE=gdrive:dir   rclone remote holding a model cache: files are copied from it
+#                        first, and anything fetched from the original source is uploaded to it
 #   --list               print "subdir name" for every known model file and exit
 set -euo pipefail
 
@@ -71,11 +73,29 @@ fi
 grep -viE '^(torch|torchvision|torchaudio)([<>=~ ]|$)' "$COMFY/requirements.txt" > /tmp/comfy-reqs.txt
 pip install -q -r /tmp/comfy-reqs.txt "huggingface_hub[hf_xet]>=0.34" gradio
 
+DRIVE=${H3_DRIVE_REMOTE:-}
+if [ -n "$DRIVE" ] && ! command -v rclone >/dev/null; then
+  rm -rf /tmp/rc && mkdir /tmp/rc
+  curl -fsSL -o /tmp/rc/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
+  unzip -q /tmp/rc/rclone.zip -d /tmp/rc && install -m 755 /tmp/rc/rclone-*-linux-amd64/rclone /usr/local/bin/rclone
+fi
+cached=""
+[ -n "$DRIVE" ] && cached=$(rclone lsf -R --files-only "$DRIVE" 2>/dev/null || true)
+uploads=()
+
 for entry in ${FILES[@]+"${FILES[@]}"}; do
   IFS='|' read -r src a b sub sha <<< "$entry"
-  dest=$M/$sub/$(basename "$b")
-  [ -s "$dest" ] && { echo "have $(basename "$b")"; continue; }
+  name=$(basename "$b")
+  dest=$M/$sub/$name
+  [ -s "$dest" ] && { echo "have $name"; continue; }
   mkdir -p "$M/$sub"
+  if grep -qxF "$sub/$name" <<< "$cached"; then
+    t0=$SECONDS
+    rclone copyto "$DRIVE/$sub/$name" "$dest" --multi-thread-streams 8 && {
+      echo "from drive $name in $((SECONDS - t0))s"; continue; }
+    rm -f "$dest"
+  fi
+  [ -n "$DRIVE" ] && uploads+=("$sub/$name")
   if [ "$src" = hf ]; then
     mkdir -p "$ROOT/hf-dl"
     # Unauthenticated Hub downloads get rate limited (429); back off, then skip the xet CDN.
@@ -94,5 +114,9 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
   fi
 done
 rm -rf "$ROOT/hf-dl"
+for rel in ${uploads[@]+"${uploads[@]}"}; do
+  t0=$SECONDS
+  rclone copyto "$M/$rel" "$DRIVE/$rel" --drive-chunk-size 256M && echo "to drive $rel in $((SECONDS - t0))s"
+done
 ls -la "$M"/{diffusion_models,text_encoders,vae,loras}
 echo SETUP_DONE
