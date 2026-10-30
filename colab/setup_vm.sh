@@ -4,8 +4,10 @@
 # Idempotent; re-running skips finished steps.
 #   COMFY_REF=<commit>   check out this ComfyUI commit (to match another install)
 #   H3_FILES="a b ..."   only fetch these model file names (from any preset)
-#   H3_DRIVE_REMOTE=gdrive:dir   rclone remote holding a model cache: files are copied from it
-#                        first, and anything fetched from the original source is uploaded to it
+#   H3_DRIVE_REMOTE=gdrive:dir   rclone remote holding a model cache; anything fetched from the
+#                        original source and missing there is uploaded to it
+#   H3_DRIVE_MODE=fallback|first  fallback (default): use the cache only when the original source
+#                        fails (it measured slower than the Hub); first: copy from the cache first
 #   --list               print "subdir name" for every known model file and exit
 set -euo pipefail
 
@@ -83,8 +85,8 @@ cached=""
 [ -n "$DRIVE" ] && cached=$(rclone lsf -R --files-only "$DRIVE" 2>/dev/null || true)
 uploads=()
 
-# Pull everything the cache has in one parallel copy.
-if [ -n "$cached" ]; then
+# In "first" mode pull everything the cache has in one parallel copy.
+if [ -n "$cached" ] && [ "${H3_DRIVE_MODE:-fallback}" = first ]; then
   : > /tmp/h3-from-drive
   for entry in ${FILES[@]+"${FILES[@]}"}; do
     IFS='|' read -r _ _ b sub _ <<< "$entry"
@@ -105,22 +107,35 @@ for entry in ${FILES[@]+"${FILES[@]}"}; do
   dest=$M/$sub/$name
   [ -s "$dest" ] && { echo "have $name"; continue; }
   mkdir -p "$M/$sub"
-  [ -n "$DRIVE" ] && uploads+=("$sub/$name")
+  in_cache=false
+  grep -qxF "$sub/$name" <<< "$cached" && in_cache=true
+  [ -n "$DRIVE" ] && ! $in_cache && uploads+=("$sub/$name")
   if [ "$src" = hf ]; then
     mkdir -p "$ROOT/hf-dl"
     # Unauthenticated Hub downloads get rate limited (429); back off, then skip the xet CDN.
     for try in 1 2 3 4 5; do
       if [ "$try" -eq 1 ]; then hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break
       else HF_HUB_DISABLE_XET=1 hf download "$a" "$b" --local-dir "$ROOT/hf-dl" && break; fi
-      [ "$try" -eq 5 ] && exit 1
+      if [ "$try" -eq 5 ]; then
+        $in_cache || exit 1
+        echo "hub failed for $name, copying it from drive" >&2
+        rclone copyto "$DRIVE/$sub/$name" "$dest" --multi-thread-streams 8 || exit 1
+        continue 2
+      fi
       echo "download failed (try $try), retrying in $((try * 20))s" >&2
       sleep $((try * 20))
     done
     mv "$ROOT/hf-dl/$b" "$dest"
   else
-    curl -fsSL ${CIVITAI_TOKEN:+-H "Authorization: Bearer $CIVITAI_TOKEN"} -o "$dest.part" "$a"
-    echo "$sha  $dest.part" | sha256sum -c --quiet || { rm -f "$dest.part"; echo "checksum mismatch: $b" >&2; exit 1; }
-    mv "$dest.part" "$dest"
+    if curl -fsSL ${CIVITAI_TOKEN:+-H "Authorization: Bearer $CIVITAI_TOKEN"} -o "$dest.part" "$a" \
+        && echo "$sha  $dest.part" | sha256sum -c --quiet; then
+      mv "$dest.part" "$dest"
+    else
+      rm -f "$dest.part"
+      $in_cache || { echo "download or checksum failed: $b" >&2; exit 1; }
+      echo "civitai failed for $name, copying it from drive" >&2
+      rclone copyto "$DRIVE/$sub/$name" "$dest" --multi-thread-streams 8 || exit 1
+    fi
   fi
 done
 rm -rf "$ROOT/hf-dl"

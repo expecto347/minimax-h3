@@ -34,8 +34,9 @@ instabox port publish agent 8080                        # 得到 https://8080-<i
 ## Google Drive 模型缓存
 
 `~/.config/rclone/rclone.conf` 里的 `gdrive` 远端（`drive.file` 权限，只能看到 rclone 自己上传的文件）
-加上 `H3_DRIVE_REMOTE=gdrive:MiniMax-H3-models`：Colab 开机时模型优先从 Drive 拷贝，Drive 没有的才从
-Hugging Face / Civitai 下载，下载后自动传进 Drive。`seed_drive.sh` 用便宜的 CPU Colab（约 0.08 units/小时）
+加上 `H3_DRIVE_REMOTE=gdrive:MiniMax-H3-models`：模型照常从 Hugging Face / Civitai 下载（实测更快），
+下载失败时改从 Drive 拷贝；Drive 里没有的新模型下载后自动传进 Drive。`H3_DRIVE_MODE=first` 可改为 Drive 优先。
+实测（CPU Colab）：Drive 冷启动约 61MB/s（73GB 用 20 分钟），Hugging Face 约 95–150MB/s。`seed_drive.sh` 用便宜的 CPU Colab（约 0.08 units/小时）
 预先把 Mystic 全套传进 Drive。
 
 ## 注意
