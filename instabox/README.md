@@ -28,7 +28,7 @@ colab ...                                               # 在 instabox 上登录
 instabox port publish agent 8080                        # 得到 https://8080-<id>.instabox.tech
 ```
 
-配置在 `~/.config/h3.env`（`COLAB_GPU`、`COLAB_IDLE_STOP_SECONDS` 等），改完
+配置在 `~/.config/h3.env`（`COLAB_GPU`、`COLAB_IDLE_STOP_SECONDS`、可选的 `HF_TOKEN` 只读令牌等），改完
 `sudo systemctl restart h3-comfyui`。日志：`sudo journalctl -u h3-comfyui -f`。
 
 ## Google Drive 模型缓存

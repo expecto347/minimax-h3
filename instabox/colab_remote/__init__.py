@@ -14,6 +14,7 @@ keep working through ComfyUI's own machinery while the work happens remotely:
 Configuration (environment):
   COLAB_SESSION (h3)  COLAB_GPU (G4)  COLAB_REMOTE_PORT (9188)
   COLAB_IDLE_STOP_SECONDS (300)  H3_COLAB_DIR (dir with setup_vm.sh, start_comfy.sh)
+  HF_TOKEN: Hugging Face read token, written to the VM's token file (avoids 429s)
   H3_DRIVE_REMOTE (e.g. gdrive:MiniMax-H3-models): rclone model cache; this host's
     ~/.config/rclone/rclone.conf is copied to the Colab VM to reach it
 """
@@ -127,6 +128,10 @@ def ensure_remote(prompt, say):
     files = model_files(prompt)
     say(f"正在准备 ComfyUI 和模型（{len(files)} 个文件，首次约 5–10 分钟）…")
     env = f"COMFY_REF={comfy_ref()} H3_FILES={shlex.quote(' '.join(files))}"
+    if os.environ.get("HF_TOKEN"):
+        # Via stdin into hf's token file, so the token never shows on a command line.
+        subprocess.run(["ssh", HOST, "mkdir -p ~/.cache/huggingface && umask 077 && cat > ~/.cache/huggingface/token"],
+                       input=os.environ["HF_TOKEN"], text=True, check=True, timeout=60)
     if DRIVE_REMOTE and os.path.isfile(RCLONE_CONF):
         ssh("mkdir -p ~/.config/rclone && chmod 700 ~/.config/rclone", timeout=60)
         sh(f"scp -q {RCLONE_CONF} {HOST}:.config/rclone/rclone.conf", timeout=60)

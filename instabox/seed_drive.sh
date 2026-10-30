@@ -4,6 +4,8 @@
 set -euo pipefail
 
 export PATH=$HOME/.local/bin:$PATH
+# HF_TOKEN etc. from the plugin's config, when present.
+if [ -f ~/.config/h3.env ]; then set -a; . ~/.config/h3.env; set +a; fi
 REPO=${REPO:-$HOME/minimax-h3}
 DRIVE=${H3_DRIVE_REMOTE:-gdrive:MiniMax-H3-models}
 SESSION=h3seed
@@ -34,6 +36,9 @@ colab sessions | grep -qw "$SESSION" || colab new -s "$SESSION"
 ssh "$HOST" 'df -h /content | tail -1; mkdir -p ~/.config/rclone && chmod 700 ~/.config/rclone'
 scp -q "$REPO/colab/setup_vm.sh" "$HOST":/content/
 scp -q ~/.config/rclone/rclone.conf "$HOST":.config/rclone/rclone.conf
+if [ -n "${HF_TOKEN:-}" ]; then
+  ssh "$HOST" 'mkdir -p ~/.cache/huggingface && umask 077 && cat > ~/.cache/huggingface/token' <<< "$HF_TOKEN"
+fi
 ssh "$HOST" "cd /content && H3_FILES='$files' H3_DRIVE_REMOTE='$DRIVE' bash setup_vm.sh all > setup.log 2>&1; grep -E 'drive|have|SETUP_DONE|rror' setup.log"
 # Measure a real cold start: drop every local model and fetch them back from Drive.
 ssh "$HOST" "rm -f /content/ComfyUI/models/*/*.safetensors && cd /content && H3_FILES='$files' H3_DRIVE_REMOTE='$DRIVE' bash setup_vm.sh all > restore.log 2>&1; grep -E 'from drive|failed' restore.log; du -sh /content/ComfyUI/models"
