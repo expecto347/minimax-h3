@@ -2,6 +2,9 @@
 # Set up ComfyUI + MiniMax-H3 community NSFW models on a Colab VM.
 # Run on the VM: bash setup_vm.sh [mystic|pinkcherry|all]   (default: mystic)
 # Idempotent; re-running skips finished steps.
+#   COMFY_REF=<commit>   check out this ComfyUI commit (to match another install)
+#   H3_FILES="a b ..."   only fetch these model file names (from any preset)
+#   --list               print "subdir name" for every known model file and exit
 set -euo pipefail
 
 PRESET=${1:-${H3_PRESET:-mystic}}
@@ -14,6 +17,10 @@ COMMON=(
   "hf|ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot|qwen3vl_32b_h3_ultra_uncensored_heretic_int8_convrot.safetensors|text_encoders"
   "hf|Comfy-Org/MiniMax-H3|vae/minimax_h3_video_vae_fp16.safetensors|vae"
   "hf|Comfy-Org/MiniMax-H3|vae/minimax_h3_audio_vae_fp32.safetensors|vae"
+)
+# Used by the Mystic author's REF2VA workflow; decodes ~2x faster.
+EXTRA=(
+  "hf|Comfy-Org/MiniMax-H3|vae/minimax_h3_video_vae_int8_convrot.safetensors|vae"
 )
 # Mystic XXX v5.0 by alcaitiff (civitai.com/models/2856467) on the official pruned INT8 bases,
 # with the turbo LoRA from the author's workflow.
@@ -31,18 +38,40 @@ PINKCHERRY=(
 case "$PRESET" in
   mystic) FILES=("${COMMON[@]}" "${MYSTIC[@]}") ;;
   pinkcherry) FILES=("${COMMON[@]}" "${PINKCHERRY[@]}") ;;
-  all) FILES=("${COMMON[@]}" "${MYSTIC[@]}" "${PINKCHERRY[@]}") ;;
+  all|--list) FILES=("${COMMON[@]}" "${MYSTIC[@]}" "${PINKCHERRY[@]}" "${EXTRA[@]}") ;;
   *) echo "unknown preset: $PRESET" >&2; exit 1 ;;
 esac
 
+if [ "$PRESET" = --list ]; then
+  for entry in "${FILES[@]}"; do
+    IFS='|' read -r _ _ b sub _ <<< "$entry"
+    echo "$sub $(basename "$b")"
+  done
+  exit 0
+fi
+
+if [ -n "${H3_FILES:-}" ]; then
+  FILES=("${COMMON[@]}" "${MYSTIC[@]}" "${PINKCHERRY[@]}" "${EXTRA[@]}")
+  wanted=()
+  for entry in "${FILES[@]}"; do
+    IFS='|' read -r _ _ b _ _ <<< "$entry"
+    [[ " $H3_FILES " == *" $(basename "$b") "* ]] && wanted+=("$entry")
+  done
+  FILES=("${wanted[@]}")
+fi
+
 if [ ! -d "$COMFY" ]; then
   git clone --depth 1 https://github.com/comfyanonymous/ComfyUI "$COMFY"
+fi
+if [ -n "${COMFY_REF:-}" ] && [ "$(git -C "$COMFY" rev-parse HEAD)" != "$COMFY_REF" ]; then
+  git -C "$COMFY" fetch -q --depth 1 origin "$COMFY_REF"
+  git -C "$COMFY" checkout -q "$COMFY_REF"
 fi
 # Keep Colab's preinstalled CUDA torch; install everything else.
 grep -viE '^(torch|torchvision|torchaudio)([<>=~ ]|$)' "$COMFY/requirements.txt" > /tmp/comfy-reqs.txt
 pip install -q -r /tmp/comfy-reqs.txt "huggingface_hub[hf_xet]>=0.34" gradio
 
-for entry in "${FILES[@]}"; do
+for entry in ${FILES[@]+"${FILES[@]}"}; do
   IFS='|' read -r src a b sub sha <<< "$entry"
   dest=$M/$sub/$(basename "$b")
   [ -s "$dest" ] && { echo "have $(basename "$b")"; continue; }
