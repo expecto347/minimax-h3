@@ -25,7 +25,11 @@ COMMON=(
 # Used by the Mystic author's REF2VA workflow; decodes ~2x faster.
 EXTRA=(
   "hf|Comfy-Org/MiniMax-H3|vae/minimax_h3_video_vae_int8_convrot.safetensors|vae"
+  # Layers 50-63 of the Heretic encoder: turns it back into an LLM for the prompt enhancer.
+  "hf|ethanfel/Qwen3-VL-32B-Ultra-Heretic-H3-ComfyUI-INT8-ConvRot|qwen3vl_32b_h3_generation_tail_50_63_int8_convrot.safetensors|text_encoders"
 )
+# Prompt enhancer node pack, pinned to the commit that was code-reviewed (2026-10-30).
+H3_GUIDE_REF=054ccb822864aac57f98c87e66fb13d2e5aa3b7a
 # Mystic XXX v5.0 by alcaitiff (civitai.com/models/2856467) on the official pruned INT8 bases,
 # with the turbo LoRA from the author's workflow.
 MYSTIC=(
@@ -70,6 +74,12 @@ fi
 if [ -n "${COMFY_REF:-}" ] && [ "$(git -C "$COMFY" rev-parse HEAD)" != "$COMFY_REF" ]; then
   git -C "$COMFY" fetch -q --depth 1 origin "$COMFY_REF"
   git -C "$COMFY" checkout -q "$COMFY_REF"
+fi
+guide=$COMFY/custom_nodes/ComfyUI-MiniMax-H3-Guide
+if [ "$(git -C "$guide" rev-parse HEAD 2>/dev/null)" != "$H3_GUIDE_REF" ]; then
+  rm -rf "$guide"
+  git clone -q https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide "$guide"
+  git -C "$guide" checkout -q "$H3_GUIDE_REF"
 fi
 # Keep Colab's preinstalled CUDA torch; install everything else.
 grep -viE '^(torch|torchvision|torchaudio)([<>=~ ]|$)' "$COMFY/requirements.txt" > /tmp/comfy-reqs.txt

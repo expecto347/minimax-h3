@@ -133,7 +133,8 @@ def main():
     app.router.add_route("*", "/{tail:.*}", handler)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
-    web.run_app(app, host="0.0.0.0", port=LISTEN_PORT, access_log=None)
+    # Open websockets would otherwise hold a restart for aiohttp's default 60 s.
+    web.run_app(app, host="0.0.0.0", port=LISTEN_PORT, access_log=None, shutdown_timeout=3)
 
 
 if __name__ == "__main__":

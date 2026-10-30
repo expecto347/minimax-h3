@@ -25,6 +25,14 @@ uv pip install --python "$VENV/bin/python" -q -r "$COMFY/requirements.txt" aioht
 command -v colab >/dev/null || [ -x "$HOME/.local/bin/colab" ] || uv tool install google-colab-cli
 
 ln -sfn "$REPO/instabox/colab_remote" "$COMFY/custom_nodes/colab_remote"
+# Prompt enhancer nodes, at the same reviewed commit setup_vm.sh installs on Colab.
+guide=$COMFY/custom_nodes/ComfyUI-MiniMax-H3-Guide
+guide_ref=$(sed -n 's/^H3_GUIDE_REF=//p' "$REPO/colab/setup_vm.sh")
+if [ "$(git -C "$guide" rev-parse HEAD 2>/dev/null)" != "$guide_ref" ]; then
+  rm -rf "$guide"
+  git clone -q https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide "$guide"
+  git -C "$guide" checkout -q "$guide_ref"
+fi
 
 # Empty stand-ins so the loader dropdowns list every model the Colab side can fetch.
 bash "$REPO/colab/setup_vm.sh" --list | while read -r sub name; do
